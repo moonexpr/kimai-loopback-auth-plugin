@@ -8,6 +8,13 @@ services:
     # appends it to the secured_area authenticator manager at compile time.
     # The concrete kimai_internal entity provider is injected explicitly since
     # several user providers exist; TokenStorage autowires by type.
+    #
+    # $trustedIps is a comma-separated IP/CIDR allowlist the real peer
+    # (REMOTE_ADDR) must match before REMOTE_USER is honoured. Set the
+    # LOOPBACK_AUTH_TRUSTED_IPS env var to override; unset/empty falls back to
+    # loopback only (127.0.0.1, ::1). Example to also trust a tailnet:
+    #   LOOPBACK_AUTH_TRUSTED_IPS="127.0.0.1,::1,100.64.0.0/10"
     KimaiPlugin\LoopbackAuthBundle\Security\LoopbackAuthenticator:
         arguments:
             $userProvider: '@security.user.provider.concrete.kimai_internal'
+            $trustedIps: '%env(default::LOOPBACK_AUTH_TRUSTED_IPS)%'

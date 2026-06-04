@@ -42,11 +42,13 @@ firewall at the dependency-injection container level instead:
 
 1. **`Security/LoopbackAuthenticator`** is a self-validating
    [`AbstractAuthenticator`](https://symfony.com/doc/current/security/custom_authenticator.html).
-   Its `supports()` returns `true` only when `REMOTE_USER` is a non-empty string
-   *and* the current session is not already authenticated as that same user — so
-   it does no redundant work on later requests, and it stands aside (returns
-   `false`) for any request without `REMOTE_USER`, letting Kimai's normal
-   `form_login` flow apply.
+   Its `supports()` returns `true` only when **all** of these hold: `REMOTE_USER`
+   is a non-empty string; the real peer address (`REMOTE_ADDR`) is inside the
+   trusted allowlist (default loopback — see [Hardening](#hardening)); and the
+   current session is not already authenticated as that same user. It stands
+   aside (returns `false`) otherwise, letting Kimai's normal `form_login` flow
+   apply. The `REMOTE_ADDR` check is defense in depth — see
+   [Hardening](#hardening) for why it does not rely on the web server alone.
 2. When it does fire, `authenticate()` returns a `SelfValidatingPassport` built
    from a `UserBadge` for the `REMOTE_USER` identifier, resolved against Kimai's
    internal user provider (`security.user.provider.concrete.kimai_internal`).
@@ -175,21 +177,86 @@ nginx -t && systemctl reload nginx
   request path can inherit a stale or client-supplied value; only a loopback
   peer is given an identity.
 - **Key off the real peer address** (`$remote_addr`), never off a client-
-  controlled request header (`X-Forwarded-For`, `X-Remote-User`, etc.). A `map`
-  on `$remote_addr` is preferred over `if` blocks — it cannot be tricked by a
-  header and avoids nginx's [`if`-in-location pitfalls](https://www.nginx.com/resources/wiki/start/topics/depth/ifisevil/).
+  controlled request header (`X-Forwarded-For`, `X-Remote-User`, etc.). A `geo`
+  block on `$remote_addr` is preferred over `if` blocks — it cannot be tricked
+  by a header, accepts CIDR ranges, and avoids nginx's [`if`-in-location
+  pitfalls](https://www.nginx.com/resources/wiki/start/topics/depth/ifisevil/).
 - **Behind a reverse proxy**, `$remote_addr` is the proxy, not the browser, so
   the map must run on the edge that terminates the *real* client connection —
   otherwise every proxied request looks like loopback.
 
 ## Behaviour summary
 
-| Request origin | `REMOTE_USER` | Result |
-|---|---|---|
-| Loopback, first request | set to a valid user | Auto-logged-in, no password |
-| Loopback, already logged in as that user | set | Plugin stands aside; existing session used |
-| Any non-loopback client | empty | Plugin stands aside; normal Kimai login form |
-| Loopback, user does not exist in Kimai | set | Auth fails, falls through to normal login |
+| Request origin | In `REMOTE_ADDR` allowlist? | `REMOTE_USER` | Result |
+|---|---|---|---|
+| Loopback, first request | yes | set to a valid user | Auto-logged-in, no password |
+| Loopback, already logged in as that user | yes | set | Plugin stands aside; existing session used |
+| Loopback, user does not exist in Kimai | yes | set | Auth fails, falls through to normal login |
+| Allowlisted peer (e.g. tailnet, if configured) | yes | set | Auto-logged-in, no password |
+| Non-allowlisted peer (LAN/WAN) | **no** | set (e.g. via a misconfigured map) | **Plugin refuses** — normal Kimai login form |
+| Any non-loopback client | — | empty | Plugin stands aside; normal Kimai login form |
+
+The fifth row is the defense-in-depth guarantee: even if the web server wrongly
+sets `REMOTE_USER` for a non-allowlisted peer, the plugin still refuses it.
+
+## Hardening
+
+This plugin is a deliberate password bypass; the rest of this section is about
+shrinking what can go wrong.
+
+### Two independent allowlists
+
+Auto-login requires the request to pass **both** gates, so a mistake in one does
+not by itself grant access:
+
+1. **Web server** — `examples/nginx/loopback-auth-map.conf` only sets
+   `REMOTE_USER` for source addresses you list (default: loopback).
+2. **Plugin** — the authenticator independently re-checks the real `REMOTE_ADDR`
+   against its own allowlist before honouring `REMOTE_USER`.
+
+Configure the plugin allowlist with an environment variable (comma-separated
+IPs/CIDRs, IPv4 and IPv6). Unset or empty falls back to loopback only:
+
+```dotenv
+# .env.local  — default behaviour, no need to set it:
+# LOOPBACK_AUTH_TRUSTED_IPS="127.0.0.1,::1"
+
+# To also auto-login authenticated tailnet devices, widen BOTH allowlists in
+# step — the plugin var and the nginx geo block:
+LOOPBACK_AUTH_TRUSTED_IPS="127.0.0.1,::1,100.64.0.0/10"
+```
+
+Keep the two allowlists in agreement: the plugin will refuse any peer the nginx
+side lets through but the plugin's own list does not include.
+
+### Run the audit
+
+[`scripts/security-audit.sh`](scripts/security-audit.sh) inspects (it changes
+nothing) what the HTTP port is bound to, which of the host's networks can
+actually reach it (classified tailnet / LAN / other), the effective plugin
+allowlist, and nginx config smells. Exit code `0`/`1`/`2` = clean/warnings/
+failures, so it drops into CI or a cron check.
+
+```bash
+scripts/security-audit.sh --port 80 --nginx-conf /etc/nginx/sites-enabled/kimai.conf
+```
+
+### Other levers
+
+- **Bind narrowly.** If only same-machine access is intended, bind the vhost to
+  `listen 127.0.0.1:80;` rather than all interfaces — then no network can reach
+  it regardless of the allowlists.
+- **Restrict reachability at the proxy.** If you want trusted nets to reach
+  Kimai but untrusted ones blocked entirely, add `allow`/`deny` to the server
+  block (e.g. `allow 127.0.0.1; allow 100.64.0.0/10; deny all;`). This is about
+  who can *reach* Kimai, separate from who can *auto-login*.
+- **Mind trusted proxies.** The plugin reads the raw `REMOTE_ADDR`, not
+  Symfony's `Request::getClientIp()`, so a `X-Forwarded-For` cannot fake a
+  trusted peer. If a real reverse proxy sits in front, the loopback/allowlist
+  check must run on the edge that sees the true client address.
+- **Least-privilege account.** The auto-logged-in user has whatever role it has
+  in Kimai. For a shared trusted network, consider pointing the allowlist at a
+  non-admin Kimai account so a stray device cannot land in the admin UI.
 
 ## Uninstall
 
