@@ -1,0 +1,13 @@
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # The loopback authenticator. It is NOT wired to the firewall via config
+    # (Symfony forbids that from a plugin); RegisterLoopbackAuthenticatorPass
+    # appends it to the secured_area authenticator manager at compile time.
+    # The concrete kimai_internal entity provider is injected explicitly since
+    # several user providers exist; TokenStorage autowires by type.
+    KimaiPlugin\LoopbackAuthBundle\Security\LoopbackAuthenticator:
+        arguments:
+            $userProvider: '@security.user.provider.concrete.kimai_internal'
