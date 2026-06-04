@@ -55,9 +55,11 @@ final class LoopbackAuthenticator extends AbstractAuthenticator
     public function __construct(
         private readonly UserProviderInterface $userProvider,
         private readonly TokenStorageInterface $tokenStorage,
-        string $trustedIps = '',
+        ?string $trustedIps = '',
     ) {
-        $parsed = array_values(array_filter(array_map('trim', explode(',', $trustedIps)), static fn (string $v): bool => $v !== ''));
+        // The `%env(default::LOOPBACK_AUTH_TRUSTED_IPS)%` config resolves to null
+        // (not '') when the env var is unset, so accept null and treat it as empty.
+        $parsed = array_values(array_filter(array_map('trim', explode(',', $trustedIps ?? '')), static fn (string $v): bool => $v !== ''));
         // Empty / unset config falls back to loopback only — the safe default.
         $this->trustedIps = $parsed !== [] ? $parsed : ['127.0.0.1', '::1'];
     }
