@@ -1,0 +1,36 @@
+# LoopbackAuth — enable REMOTE_USER pass-through in the Kimai nginx vhost
+# ============================================================================
+# This patch adds ONE line to your Kimai server block: it forwards the
+# $kimai_loopback_user variable (defined in loopback-auth-map.conf) to PHP-FPM
+# as the REMOTE_USER FastCGI parameter. The plugin reads REMOTE_USER and, when
+# it is non-empty, logs that user in.
+#
+# It is written against Kimai's documented nginx vhost, where PHP is routed
+# through `location ~ ^/index\.php(/|$)`. The anchor lines (fastcgi_param
+# SCRIPT_FILENAME / DOCUMENT_ROOT) are stable across Kimai installs, so the
+# patch is portable even if your file's other lines differ.
+#
+# Apply (GNU patch, with fuzz so line numbers need not match exactly):
+#
+#     patch -p1 --fuzz=3 /etc/nginx/sites-available/kimai.conf < enable-remote-user.patch
+#
+# If `patch` reports a failed hunk, your PHP location differs from the canonical
+# config — add this single line by hand inside the index.php location instead:
+#
+#     fastcgi_param REMOTE_USER $kimai_loopback_user;
+#
+# Then: nginx -t && systemctl reload nginx
+# ----------------------------------------------------------------------------
+--- a/kimai.conf
++++ b/kimai.conf
+@@ -23,6 +23,10 @@
+         include fastcgi_params;
+         fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+         fastcgi_param DOCUMENT_ROOT $realpath_root;
++        # LoopbackAuth: hand the loopback-derived identity to Kimai. Empty for
++        # every non-loopback client (see conf.d/kimai-loopback-auth.conf), so
++        # this is a no-op unless the request originated on the local machine.
++        fastcgi_param REMOTE_USER $kimai_loopback_user;
+         # Prevents URIs that include the front controller. This will 404:
+         # http://example.com/index.php/some-path
+         internal;

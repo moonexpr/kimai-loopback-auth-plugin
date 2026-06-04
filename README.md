@@ -67,33 +67,54 @@ point.
 
 ## Installation
 
-1. Copy the bundle into Kimai's plugin directory so the path is
-   `var/plugins/LoopbackAuthBundle/`:
+Kimai plugins are loaded from the `var/plugins/` directory; they are not
+installed into `vendor/` like ordinary Composer libraries. Use the Git method
+(the one Kimai documents); the Composer method is offered as a convenience for
+installs that carry the `kimai/kimai2-composer` installer.
 
-   ```bash
-   cd /path/to/kimai
-   git clone https://github.com/<owner>/<repo>.git var/plugins/LoopbackAuthBundle
-   ```
+### 1. Install the plugin
 
-   <!-- (Q: clone path assumes the repo root *is* the bundle. If you prefer the
-   bundle nested one level down in the published repo, adjust the path.) -->
+**Git (recommended):** clone the bundle so its path is exactly
+`var/plugins/LoopbackAuthBundle/` — the directory name must match the bundle
+class for Kimai's autoloader to find it:
 
-2. Clear and warm the Kimai cache so the compiler pass runs and the new
-   authenticator is wired into the firewall:
+```bash
+cd /path/to/kimai
+git clone https://github.com/moonexpr/kimai-loopback-auth-plugin.git var/plugins/LoopbackAuthBundle
+```
 
-   ```bash
-   bin/console kimai:reload --env=prod
-   # or, equivalently:
-   bin/console cache:clear --env=prod
-   ```
+**Composer (alternative):** on a Kimai install whose root `composer.json`
+includes the `kimai/kimai2-composer` installer (Kimai's `kimai-plugin` package
+type routes the package to `var/plugins/` rather than `vendor/`):
 
-3. Confirm Kimai sees the plugin:
+```bash
+composer require moonexpr/kimai-loopback-auth-plugin
+```
 
-   ```bash
-   bin/console kimai:bundles
-   ```
+### 2. Configure the web server
 
-   `LoopbackAuth` should appear in the list.
+The plugin does nothing until your web server sets `REMOTE_USER` for loopback
+clients. This is the security-critical half — see
+[Web server configuration](#web-server-configuration-the-required-other-half)
+below and the ready-made files in [`examples/nginx/`](examples/nginx/).
+
+### 3. Rebuild the Kimai cache
+
+So the compiler pass runs and the authenticator is wired into the firewall:
+
+```bash
+bin/console kimai:reload --env=prod
+# or, equivalently:
+bin/console cache:clear --env=prod
+```
+
+### 4. Confirm Kimai sees the plugin
+
+```bash
+bin/console kimai:bundles
+```
+
+`LoopbackAuth` should appear in the list.
 
 The user named in `REMOTE_USER` must already exist as a Kimai user — the plugin
 authenticates an existing account, it does not create one.
@@ -101,41 +122,65 @@ authenticates an existing account, it does not create one.
 ## Web server configuration (the required other half)
 
 The plugin is inert until your web server sets `REMOTE_USER`, and it is only
-safe if your web server sets `REMOTE_USER` **only for loopback clients**. Below
-is a representative nginx + PHP-FPM example. Adapt it to your deployment; do not
-copy it blindly.
+safe if your web server sets `REMOTE_USER` **only for loopback clients**. Two
+ready-made files in [`examples/nginx/`](examples/nginx/) do this for nginx +
+PHP-FPM; adapt them to your deployment rather than copying blindly.
+
+### Step 1 — define the loopback→user map
+
+[`examples/nginx/loopback-auth-map.conf`](examples/nginx/loopback-auth-map.conf)
+maps the **real peer address** to a username, defaulting to the empty string for
+everyone else. Drop it into nginx's http context:
+
+```bash
+cp examples/nginx/loopback-auth-map.conf /etc/nginx/conf.d/kimai-loopback-auth.conf
+# then edit it: set the username you want auto-logged-in for 127.0.0.1 / ::1
+```
 
 ```nginx
-# (Q: representative example — the project's actual servers/kimai.conf was not
-# available when this README was written. Verify against your own deployment.)
-
-# Default: never trust a client-supplied REMOTE_USER. Strip it.
-fastcgi_param REMOTE_USER "";
-
-# Only when the connection originates from the loopback interface do we assert
-# an identity. $remote_addr is the real peer; it cannot be spoofed by an HTTP
-# header. Map it to the Kimai username you want auto-logged-in.
-location ~ \.php$ {
-    include fastcgi_params;
-    fastcgi_pass unix:/run/php/php-fpm.sock;
-
-    set $loopback_user "";
-    if ($remote_addr = "127.0.0.1") { set $loopback_user "admin"; }
-    if ($remote_addr = "::1")       { set $loopback_user "admin"; }
-    fastcgi_param REMOTE_USER $loopback_user;
+map $remote_addr $kimai_loopback_user {
+    default    "";
+    127.0.0.1  "admin";
+    ::1        "admin";
 }
 ```
 
-Key rules, regardless of web server:
+### Step 2 — forward it to PHP as `REMOTE_USER`
 
-- **Strip first, set second.** Establish `REMOTE_USER = ""` as the default and
-  only populate it on the loopback branch, so no request path can inherit a
-  stale or client-supplied value.
-- **Key off the real peer address** (`$remote_addr` in nginx), never off a
-  request header a client controls (`X-Forwarded-For`, `X-Remote-User`, etc.).
-- **If Kimai sits behind a reverse proxy**, the loopback check must run on the
-  edge that terminates the *real* client connection, not on an internal hop that
-  always looks like loopback to the app server.
+The Kimai vhost routes PHP through `location ~ ^/index\.php(/|$)`. One line
+inside that block forwards the mapped value.
+[`examples/nginx/enable-remote-user.patch`](examples/nginx/enable-remote-user.patch)
+adds it for you, against Kimai's documented vhost:
+
+```bash
+patch -p1 --fuzz=3 /etc/nginx/sites-available/kimai.conf < examples/nginx/enable-remote-user.patch
+```
+
+If the hunk fails because your config differs, add the single line by hand
+inside the `index.php` location:
+
+```nginx
+fastcgi_param REMOTE_USER $kimai_loopback_user;
+```
+
+Then validate and reload:
+
+```bash
+nginx -t && systemctl reload nginx
+```
+
+### Why it is built this way
+
+- **Default empty, then map.** `$kimai_loopback_user` defaults to `""`, so no
+  request path can inherit a stale or client-supplied value; only a loopback
+  peer is given an identity.
+- **Key off the real peer address** (`$remote_addr`), never off a client-
+  controlled request header (`X-Forwarded-For`, `X-Remote-User`, etc.). A `map`
+  on `$remote_addr` is preferred over `if` blocks — it cannot be tricked by a
+  header and avoids nginx's [`if`-in-location pitfalls](https://www.nginx.com/resources/wiki/start/topics/depth/ifisevil/).
+- **Behind a reverse proxy**, `$remote_addr` is the proxy, not the browser, so
+  the map must run on the edge that terminates the *real* client connection —
+  otherwise every proxied request looks like loopback.
 
 ## Behaviour summary
 

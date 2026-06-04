@@ -1,8 +1,7 @@
 {
-    "name": "kimai-plugin/loopback-auth-bundle",
+    "name": "moonexpr/kimai-loopback-auth-plugin",
     "description": "Passwordless auto-login for same-machine (loopback) requests via the REMOTE_USER FastCGI param. No core files modified.",
     "type": "kimai-plugin",
-    "version": "1.0.0",
     "license": "MIT",
     "homepage": "https://github.com/moonexpr/kimai-loopback-auth-plugin",
     "authors": [
