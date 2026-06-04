@@ -4,28 +4,37 @@ A [Kimai](https://www.kimai.org/) plugin that auto-logs-in a user when the
 request comes from the same machine (loopback). It modifies no Kimai core file,
 so it survives upgrades.
 
-The plugin itself holds **no credential logic**. It trusts a single signal —
-the `REMOTE_USER` server variable — and delegates the actual trust decision to
-your web server, which must be configured to set `REMOTE_USER` *only* for
-loopback clients. The plugin is one half of the mechanism; the web server
-configuration is the other, security-critical half.
+The plugin holds **no password logic**. It reads one signal — the `REMOTE_USER`
+server variable, which your web server sets *only* for trusted (by default,
+loopback) clients — and, as a second independent check, confirms the real peer
+address is in its own trusted allowlist before logging that user in. Auto-login
+therefore requires **two gates to agree**: the web-server config and the
+plugin's `REMOTE_ADDR` allowlist (see [Hardening](#hardening)). A mistake in
+either one alone does not grant access.
 
 > ### ⚠️ Security model — read before installing
 >
-> This plugin grants a session to whichever username your web server places in
-> `REMOTE_USER`, **without a password**. Its safety rests entirely on the
-> guarantee that your web server sets `REMOTE_USER` *exclusively* for loopback
-> (`127.0.0.1` / `::1`) requests and strips any client-supplied value on every
-> other path.
+> This plugin grants a session, **without a password**, to whichever username
+> appears in `REMOTE_USER` — *provided* the request also originates from an
+> allowlisted peer address. There are two independent gates:
 >
-> If a reverse proxy, a misconfigured `fastcgi_param`, or an untrusted upstream
-> can cause `REMOTE_USER` to be populated for a non-loopback request, this
-> plugin becomes a full authentication bypass. Treat the web-server rule as part
-> of the plugin: get it wrong and the plugin is wrong.
+> 1. **Web server** — must be configured to set `REMOTE_USER` *exclusively* for
+>    trusted (default: loopback `127.0.0.1` / `::1`) clients, and strip any
+>    client-supplied value on every other path.
+> 2. **Plugin** — independently checks the real `REMOTE_ADDR` against its trusted
+>    allowlist (default loopback; `LOOPBACK_AUTH_TRUSTED_IPS` to widen) and
+>    refuses any peer outside it, even if `REMOTE_USER` is set.
 >
-> Intended use is a single-operator, local-only Kimai instance (e.g. a
-> workstation or a host reached only over an authenticated tunnel), where typing
-> a password on every visit to your own machine is pure friction.
+> The second gate is defense in depth: a misconfigured `fastcgi_param`, a reverse
+> proxy, or an untrusted upstream that populates `REMOTE_USER` for a non-loopback
+> request is **not** by itself enough to authenticate. It is still a deliberate
+> password bypass, though — treat both gates as part of the plugin, keep their
+> allowlists in agreement, and run [`scripts/security-audit.sh`](scripts/security-audit.sh)
+> to check your deployment.
+>
+> Intended use is a single-operator, local-only (or authenticated-tunnel) Kimai
+> instance, where typing a password on every visit to your own machine is pure
+> friction.
 
 ## Requirements
 
